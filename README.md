@@ -1,4 +1,4 @@
-# Mina zkApp: Mina Token
+# Mina zkApp: Mina Optional Privacy Token
 
 This template uses TypeScript.
 
