@@ -1,5 +1,7 @@
 import { SparseMerkleTree } from 'snarky-smt';
-import { arrayProp, Bool, CircuitValue, Field } from 'snarkyjs';
+import { arrayProp, Bool, CircuitValue, Field, isReady } from 'snarkyjs';
+
+await isReady;
 
 const MAX_COMMITMENTS = 2;
 

@@ -4,11 +4,14 @@ import {
   Encryption,
   Field,
   Group,
+  isReady,
   Poseidon,
   PrivateKey,
   prop,
 } from 'snarkyjs';
 import { Note } from './note';
+
+await isReady;
 
 export const NOTE_CIPHERTEXT_LENGTH = Note.sizeInFields() + 1;
 

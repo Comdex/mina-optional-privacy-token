@@ -1,29 +1,60 @@
-import { Bool, CircuitValue, Field, prop } from 'snarkyjs';
-import { EncryptedNote } from './encrypted_note';
-import { NotePublicInfo } from './note_public_info';
+import {
+  arrayProp,
+  Bool,
+  Circuit,
+  CircuitValue,
+  Field,
+  isReady,
+} from 'snarkyjs';
+import { MAX_INPUT_NOTES, MAX_OUTPUT_NOTEINFOS } from './notes';
+import { NoteInfo } from './note_info';
+
+await isReady;
 
 export class Operation extends CircuitValue {
-  @prop newNullifier: Field;
-  @prop newNote: NotePublicInfo;
+  @arrayProp(Field, MAX_INPUT_NOTES) nullifiers: Field[];
+  @arrayProp(NoteInfo, MAX_OUTPUT_NOTEINFOS) noteInfos: NoteInfo[];
 
-  constructor(newNullifier: Field, newNote: NotePublicInfo) {
+  constructor(nullifiers: Field[], noteInfos: NoteInfo[]) {
     super();
-    this.newNullifier = newNullifier;
-    this.newNote = newNote;
+    this.nullifiers = nullifiers;
+
+    for (let i = noteInfos.length; i < MAX_OUTPUT_NOTEINFOS; i++) {
+      noteInfos.push(NoteInfo.empty());
+    }
+    this.noteInfos = noteInfos;
   }
 
-  isNewNote(): Bool {
-    return this.newNullifier.equals(Field.zero);
+  containSameNullifier(otherOperation: Operation): Bool {
+    let noSameNullifier = Bool(true);
+
+    for (let i = 0; i < this.nullifiers.length; i++) {
+      for (let j = 0; j < otherOperation.nullifiers.length; j++) {
+        const tempNoSameNullifier = Circuit.if(
+          this.nullifiers[i].equals(otherOperation.nullifiers[j]),
+          Bool(false),
+          Bool(true)
+        );
+        noSameNullifier = noSameNullifier.and(tempNoSameNullifier);
+      }
+    }
+
+    return noSameNullifier;
   }
 
-  static newNullifier(nullifier: Field): Operation {
-    return new Operation(nullifier, NotePublicInfo.empty());
+  static onlyNoteInfos(...noteInfos: NoteInfo[]): Operation {
+    let nullifiers = new Array(MAX_INPUT_NOTES).fill(Field.zero);
+
+    for (let i = noteInfos.length; i < MAX_OUTPUT_NOTEINFOS; i++) {
+      noteInfos.push(NoteInfo.empty());
+    }
+
+    return new Operation(nullifiers, noteInfos);
   }
 
-  static newNote(commitment: Field, encryptedNote: EncryptedNote): Operation {
-    return new Operation(
-      Field.zero,
-      new NotePublicInfo(commitment, encryptedNote)
-    );
+  static empty(): Operation {
+    let nullifiers = new Array(MAX_INPUT_NOTES).fill(Field.zero);
+    let noteInfos = new Array(MAX_OUTPUT_NOTEINFOS).fill(NoteInfo.empty());
+    return new Operation(nullifiers, noteInfos);
   }
 }

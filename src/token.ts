@@ -1,12 +1,11 @@
 import {
-  computeRootByFieldInCircuit,
+  createEmptyValue,
   DeepSparseMerkleSubTree,
   SMT_EMPTY_VALUE,
   SparseMerkleProof,
   verifyProofByFieldInCircuit,
 } from 'snarky-smt';
 import {
-  DeployArgs,
   method,
   SmartContract,
   State,
@@ -22,19 +21,32 @@ import {
   Poseidon,
   Circuit,
   CircuitString,
-  AsFieldElements,
   circuitValue,
   Bool,
+  shutdown,
+  isReady,
 } from 'snarkyjs';
 import { Commitments } from './models/commitments';
-import { MerkleProofs } from './models/merkle_proofs';
+import { EncryptedNote } from './models/encrypted_note';
 import { Note } from './models/note';
 import { InputNotes, OutputNotes } from './models/notes';
-import { NotePublicInfo } from './models/note_public_info';
+import { NoteInfo } from './models/note_info';
 import { Operation } from './models/operation';
 
+await isReady;
+
+let doProofs = true;
+
+let tokenSymbol = 'minacash';
+
 let reducerStorage = {
-  getActions({ fromActionHash: Field }): Operation[][] {
+  getActions({
+    fromActionHash,
+    endActionHash,
+  }: {
+    fromActionHash?: Field;
+    endActionHash?: Field;
+  }): Operation[][] {
     return [] as Operation[][];
   },
 };
@@ -47,8 +59,7 @@ class TokenContract extends SmartContract {
   @state(Commitments) nullifiersCommitments = State<Commitments>();
   @state(Field) accumulatedOperations = State<Field>();
 
-  reducer = Experimental.Reducer({ actionType: Note });
-  reducer2 = Experimental.Reducer({ actionType: Field });
+  reducer = Experimental.Reducer({ actionType: Operation });
 
   events = {
     Transfer: circuitValue<{ from: PublicKey; to: PublicKey; value: UInt64 }>({
@@ -62,6 +73,12 @@ class TokenContract extends SmartContract {
       value: UInt64;
     }>({ owner: PublicKey, spender: PublicKey, value: UInt64 }),
   };
+
+  proofStore: Map<string, SparseMerkleProof>;
+
+  setProofStore(store: Map<string, SparseMerkleProof>) {
+    this.proofStore = store;
+  }
 
   deploy(args: {
     verificationKey?:
@@ -78,6 +95,7 @@ class TokenContract extends SmartContract {
     this.setPermissions({
       ...Permissions.default(),
       editState: Permissions.proofOrSignature(),
+      receive: Permissions.proofOrSignature(),
     });
   }
 
@@ -103,11 +121,13 @@ class TokenContract extends SmartContract {
     // this.currentTokenBalance.set(totalSupply);
     this.accumulatedOperations.set(Experimental.Reducer.initialActionsHash);
 
-    this.account.isNew.assertEquals(Bool(true));
-    this.balance.subInPlace(Mina.accountCreationFee());
+    // this.account.isNew.assertEquals(Bool(true));
+    // this.balance.subInPlace(Mina.accountCreationFee());
   }
 
   @method mint(receiverAddress: PublicKey, amount: UInt64) {
+    this.self.body.publicKey.equals(receiverAddress).assertFalse();
+
     let totalSupply = this.TOTAL_SUPPLY.get();
     this.TOTAL_SUPPLY.assertEquals(totalSupply);
 
@@ -167,7 +187,10 @@ class TokenContract extends SmartContract {
 
     receiverNote.amount.assertEquals(amount);
     receiverNote.owner.assertEquals(receiverAddress);
+
     const commitment = receiverNote.getCommitment();
+    const encryptedNote = receiverNote.encrypt();
+
     // non-membership proof verify
     verifyProofByFieldInCircuit(
       nonMembershipProof,
@@ -182,8 +205,8 @@ class TokenContract extends SmartContract {
       amount: amount,
     });
 
-    const encryptedNote = receiverNote.encrypt();
-    this.reducer.dispatch(Operation.newNote(commitment, encryptedNote));
+    let noteInfo = new NoteInfo(commitment, encryptedNote);
+    this.reducer.dispatch(Operation.onlyNoteInfos(noteInfo));
   }
 
   @method
@@ -192,31 +215,39 @@ class TokenContract extends SmartContract {
     receiverAddress: PublicKey,
     amount: UInt64,
     inputNotes: InputNotes,
-    inputNotesMemebershipProofs: MerkleProofs,
-    inputNotesNullifierProofs: MerkleProofs,
     outputNotes: OutputNotes
   ) {
     const notesCommitments = this.notesCommitments.get();
     this.notesCommitments.assertEquals(notesCommitments);
-    let currNoteCommitment = inputNotesMemebershipProofs.proofs[0].root;
+    let currNoteCommitment = inputNotes.membershipProofs[0].root;
     notesCommitments.containsCommitment(currNoteCommitment).assertTrue();
 
     const nullifierCommitments = this.nullifiersCommitments.get();
     this.nullifiersCommitments.assertEquals(nullifierCommitments);
-    let currNullifierCommitment = inputNotesNullifierProofs.proofs[0].root;
+    let currNullifierCommitment = inputNotes.nullifierProofs[0].root;
     nullifierCommitments
       .containsCommitment(currNullifierCommitment)
       .assertTrue();
 
-    let inputNotesTotalAmount = UInt64.zero;
+    // check that there are no same nullifiers.
+    let inputNullifiers: Field[] = [];
+    for (let i = 0; i < inputNotes.notes.length; i++) {
+      inputNullifiers.push(inputNotes.notes[i].getNullifier());
+    }
+    for (let i = 0; i < inputNullifiers.length - 1; i++) {
+      for (let j = i + 1; j < inputNullifiers.length; j++) {
+        inputNullifiers[i].equals(inputNullifiers[j]).assertFalse();
+      }
+    }
 
+    let inputNotesTotalAmount = UInt64.zero;
     let dummyNote = Note.empty();
     for (let i = 0; i < inputNotes.notes.length; i++) {
       let currNote = inputNotes.notes[i];
       let checkSender = currNote.owner.equals(senderAddress);
 
       // membership proof, prove note in the note tree.
-      let membershipProof = inputNotesMemebershipProofs.proofs[i];
+      let membershipProof = inputNotes.membershipProofs[i];
       let commitmentHash = Poseidon.hash([currNote.getCommitment()]);
       let valueHash = Poseidon.hash(currNote.toFields());
 
@@ -232,7 +263,7 @@ class TokenContract extends SmartContract {
       );
 
       // non-membership proof, prove note is not in the nullifier tree.
-      let nonMembershipProof = inputNotesNullifierProofs.proofs[i];
+      let nonMembershipProof = inputNotes.nullifierProofs[i];
       let nullifierHash = Poseidon.hash([currNote.getNullifier()]);
       let checkNullifer = Circuit.if(
         currNote.equals(dummyNote),
@@ -247,15 +278,15 @@ class TokenContract extends SmartContract {
 
       checkSender.and(checkMembership).and(checkNullifer).assertTrue();
       inputNotesTotalAmount = inputNotesTotalAmount.add(currNote.amount);
-      this.reducer.dispatch(Operation.newNullifier(currNote.getNullifier()));
     }
 
     inputNotesTotalAmount.value.assertGte(amount.value);
 
     let senderNote = outputNotes.senderNote;
     senderNote.owner.assertEquals(senderAddress);
-    this.reducer.dispatch(
-      Operation.newNote(senderNote.getCommitment(), senderNote.encrypt())
+    let senderNoteInfo = new NoteInfo(
+      senderNote.getCommitment(),
+      senderNote.encrypt()
     );
 
     let outputNotesTotalAmount = senderNote.amount.add(
@@ -268,6 +299,8 @@ class TokenContract extends SmartContract {
       from: senderAddress,
       amount: amount,
     });
+
+    this.reducer.dispatch(new Operation(inputNullifiers, [senderNoteInfo]));
   }
 
   @method
@@ -276,31 +309,39 @@ class TokenContract extends SmartContract {
     receiverAddress: PublicKey,
     amount: UInt64,
     inputNotes: InputNotes,
-    inputNotesMemebershipProofs: MerkleProofs,
-    inputNotesNullifierProofs: MerkleProofs,
     outputNotes: OutputNotes
   ) {
     const notesCommitments = this.notesCommitments.get();
     this.notesCommitments.assertEquals(notesCommitments);
-    let currNoteCommitment = inputNotesMemebershipProofs.proofs[0].root;
+    let currNoteCommitment = inputNotes.membershipProofs[0].root;
     notesCommitments.containsCommitment(currNoteCommitment).assertTrue();
 
     const nullifierCommitments = this.nullifiersCommitments.get();
     this.nullifiersCommitments.assertEquals(nullifierCommitments);
-    let currNullifierCommitment = inputNotesNullifierProofs.proofs[0].root;
+    let currNullifierCommitment = inputNotes.nullifierProofs[0].root;
     nullifierCommitments
       .containsCommitment(currNullifierCommitment)
       .assertTrue();
 
-    let inputNotesTotalAmount = UInt64.zero;
+    // check that there are no same nullifiers.
+    let inputNullifiers: Field[] = [];
+    for (let i = 0; i < inputNotes.notes.length; i++) {
+      inputNullifiers.push(inputNotes.notes[i].getNullifier());
+    }
+    for (let i = 0; i < inputNullifiers.length - 1; i++) {
+      for (let j = i + 1; j < inputNullifiers.length; j++) {
+        inputNullifiers[i].equals(inputNullifiers[j]).assertFalse();
+      }
+    }
 
+    let inputNotesTotalAmount = UInt64.zero;
     let dummyNote = Note.empty();
     for (let i = 0; i < inputNotes.notes.length; i++) {
       let currNote = inputNotes.notes[i];
       let checkSender = currNote.owner.equals(senderAddress);
 
       // membership proof, prove note in the note tree.
-      let membershipProof = inputNotesMemebershipProofs.proofs[i];
+      let membershipProof = inputNotes.membershipProofs[i];
       let commitmentHash = Poseidon.hash([currNote.getCommitment()]);
       let valueHash = Poseidon.hash(currNote.toFields());
 
@@ -316,7 +357,7 @@ class TokenContract extends SmartContract {
       );
 
       // non-membership proof, prove note is not in the nullifier tree.
-      let nonMembershipProof = inputNotesNullifierProofs.proofs[i];
+      let nonMembershipProof = inputNotes.nullifierProofs[i];
       let nullifierHash = Poseidon.hash([currNote.getNullifier()]);
       let checkNullifer = Circuit.if(
         currNote.equals(dummyNote),
@@ -331,21 +372,22 @@ class TokenContract extends SmartContract {
 
       checkSender.and(checkMembership).and(checkNullifer).assertTrue();
       inputNotesTotalAmount = inputNotesTotalAmount.add(currNote.amount);
-      this.reducer.dispatch(Operation.newNullifier(currNote.getNullifier()));
     }
 
     inputNotesTotalAmount.value.assertGte(amount.value);
 
     let senderNote = outputNotes.senderNote;
     senderNote.owner.assertEquals(senderAddress);
-    this.reducer.dispatch(
-      Operation.newNote(senderNote.getCommitment(), senderNote.encrypt())
+    let senderNoteInfo = new NoteInfo(
+      senderNote.getCommitment(),
+      senderNote.encrypt()
     );
 
     let receiverNote = outputNotes.receiverNote;
     receiverNote.owner.assertEquals(receiverAddress);
-    this.reducer.dispatch(
-      Operation.newNote(receiverNote.getCommitment(), receiverNote.encrypt())
+    let receiverNoteInfo = new NoteInfo(
+      receiverNote.getCommitment(),
+      receiverNote.encrypt()
     );
 
     let outputNotesTotalAmount = senderNote.amount.add(receiverNote.amount);
@@ -356,15 +398,24 @@ class TokenContract extends SmartContract {
       from: senderAddress,
       amount: amount,
     });
+
+    this.reducer.dispatch(
+      new Operation(inputNullifiers, [senderNoteInfo, receiverNoteInfo])
+    );
   }
 
   @method
-  rollupShieldedTxs() {
+  rollupShieldedTxs(
+    currNotesCommitment: Field,
+    currNullifiersCommitment: Field
+  ) {
     const notesCommitments = this.notesCommitments.get();
     this.notesCommitments.assertEquals(notesCommitments);
+    notesCommitments.containsCommitment(currNotesCommitment);
 
     const nullifiersCommitments = this.nullifiersCommitments.get();
     this.nullifiersCommitments.assertEquals(nullifiersCommitments);
+    nullifiersCommitments.containsCommitment(currNullifiersCommitment);
 
     const accumulatedOperations = this.accumulatedOperations.get();
     this.accumulatedOperations.assertEquals(accumulatedOperations);
@@ -373,27 +424,90 @@ class TokenContract extends SmartContract {
       fromActionHash: accumulatedOperations,
     });
 
-    // let subTree = new DeepSparseMerkleSubTree();
-    // pendingActions.forEach((operations) => {
-    //   operations.forEach((operation) => {});
-    // });
+    let operations: Operation[] = [];
+    let { actionsHash: newAccumulatedOperations } = this.reducer.reduce(
+      pendingActions,
+      Field,
+      (state: Field, operation: Operation) => {
+        operations.push(operation);
+        return state;
+      },
+      // initial state
+      { state: Field.zero, actionsHash: accumulatedOperations }
+    );
+    this.accumulatedOperations.set(newAccumulatedOperations);
 
-    // let { state: newNotesCommitment, actionsHash: newAccumulatedOperations } =
-    //   this.reducer.reduce(
-    //     pendingActions,
-    //     Field,
-    //     (state: Field, operation: Operation) => {
-    //       let newNotesCommitment = computeRootByFieldInCircuit(
-    //         operation.witness,
-    //         Poseidon.hash([operation.newNote.commitment]),
-    //         operation.newNote.encryptedNote.hash()
-    //       );
+    let legalOperations: Operation[] = [];
+    let emptyOperation = Operation.empty();
+    for (let i = 0; i < operations.length - 1; i++) {
+      let operation = operations[i];
+      for (let j = i + 1; j < operations.length; j++) {
+        operation = Circuit.if(
+          operation.containSameNullifier(operations[j]),
+          emptyOperation,
+          operation
+        );
+      }
 
-    //       return Circuit.if(operation.isNewNote(), newNotesCommitment, state);
-    //     },
-    //     // initial state
-    //     { state: notesCommitment, actionsHash: accumulatedOperations }
-    //   );
+      legalOperations.push(operation);
+    }
+    legalOperations.push(operations[operations.length - 1]);
+
+    let notesSubTree = new DeepSparseMerkleSubTree<Field, EncryptedNote>(
+      currNotesCommitment,
+      EncryptedNote
+    );
+    let nullifiersSubTree = new DeepSparseMerkleSubTree<Field, Field>(
+      currNullifiersCommitment,
+      Field
+    );
+    legalOperations.forEach((v) => {
+      let nullifiers = v.nullifiers;
+      nullifiers.forEach((n) => {
+        let proof: SparseMerkleProof = Circuit.witness(
+          SparseMerkleProof,
+          () => {
+            return this.proofStore.get(n.toString())!;
+          }
+        );
+        nullifiersSubTree.addBranch(proof, n, SMT_EMPTY_VALUE);
+      });
+
+      let noteInfos = v.noteInfos;
+      noteInfos.forEach((noteInfo) => {
+        let proof: SparseMerkleProof = Circuit.witness(
+          SparseMerkleProof,
+          () => {
+            return this.proofStore.get(noteInfo.commitment.toString())!;
+          }
+        );
+        notesSubTree.addBranch(
+          proof,
+          noteInfo.commitment,
+          createEmptyValue(EncryptedNote)
+        );
+      });
+    });
+
+    legalOperations.forEach((v) => {
+      let nullifiers = v.nullifiers;
+      nullifiers.forEach((n) => {
+        nullifiersSubTree.update(n, Field.one);
+      });
+
+      let noteInfos = v.noteInfos;
+      noteInfos.forEach((noteInfo) => {
+        notesSubTree.update(noteInfo.commitment, noteInfo.encryptedNote);
+      });
+    });
+
+    let newNullifiersCommitment = nullifiersSubTree.getRoot();
+    nullifiersCommitments.updateLatestCommitment(newNullifiersCommitment);
+    this.nullifiersCommitments.set(nullifiersCommitments);
+
+    let newNotesCommitment = notesSubTree.getRoot();
+    notesCommitments.updateLatestCommitment(newNotesCommitment);
+    this.notesCommitments.set(notesCommitments);
   }
 
   @method setInvalidTokenSymbol() {
@@ -403,39 +517,46 @@ class TokenContract extends SmartContract {
   }
 }
 
-let zkappKey: PrivateKey;
-let zkappAddress: PublicKey;
-let zkapp: TokenContract;
-let feePayer: PrivateKey;
+let local = Mina.LocalBlockchain();
+Mina.setActiveInstance(local);
+let feePayerKey = local.testAccounts[0].privateKey;
+let callerKey = local.testAccounts[1].privateKey;
+let zkappKey = PrivateKey.random();
+let zkappAddress = zkappKey.toPublicKey();
 
-let tokenAccount1Key: PrivateKey;
-let tokenAccount1: PublicKey;
+async function test() {
+  let zkapp = new TokenContract(zkappAddress);
 
-let tokenAccount2Key: PrivateKey;
-let tokenAccount2: PublicKey;
+  if (doProofs) {
+    console.log('start compiling');
+    console.time('compile');
+    await TokenContract.compile(zkappAddress);
+    console.timeEnd('compile');
+  }
 
-// Call `setupLocal` before running each test to reset the ledger state.
-async function setupLocal() {
-  // Set up local blockchain, create zkapp keys, token account keys, deploy the contract
-  let Local = Mina.LocalBlockchain();
-  Mina.setActiveInstance(Local);
-  feePayer = Local.testAccounts[0].privateKey;
+  const initCommitments = Commitments.createInitCommitments();
 
-  zkappKey = PrivateKey.random();
-  zkappAddress = zkappKey.toPublicKey();
-  zkapp = new TokenContract(zkappAddress);
+  console.log('deploying');
+  let tx = await local.transaction(feePayerKey, () => {
+    Party.fundNewAccount(feePayerKey);
+    zkapp.deploy({ zkappKey, tokenSymbol });
+    // zkapp.init(
+    //   UInt64.fromNumber(10_000),
+    //   UInt64.fromNumber(10_000),
+    //   initCommitments,
+    //   initCommitments
+    // );
+  });
+  if (doProofs) {
+    await tx.prove();
+    tx.send();
+  } else {
+    tx.send();
+  }
 
-  tokenAccount1Key = Local.testAccounts[1].privateKey;
-  tokenAccount1 = tokenAccount1Key.toPublicKey();
+  console.log('deploy done');
 
-  tokenAccount2Key = Local.testAccounts[2].privateKey;
-  tokenAccount2 = tokenAccount2Key.toPublicKey();
-
-  (
-    await Mina.transaction(feePayer, () => {
-      Party.fundNewAccount(feePayer);
-      zkapp.deploy({ zkappKey });
-      zkapp.init();
-    })
-  ).send();
+  shutdown();
 }
+
+await test();

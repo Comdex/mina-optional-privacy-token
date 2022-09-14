@@ -1,7 +1,9 @@
-import { arrayProp, CircuitValue, Field, prop } from 'snarkyjs';
+import { CircuitValue, Field, isReady, prop } from 'snarkyjs';
 import { EncryptedNote } from './encrypted_note';
 
-export class NotePublicInfo extends CircuitValue {
+await isReady;
+
+export class NoteInfo extends CircuitValue {
   @prop commitment: Field;
   @prop encryptedNote: EncryptedNote;
 
@@ -11,7 +13,7 @@ export class NotePublicInfo extends CircuitValue {
     this.encryptedNote = encryptedNote;
   }
 
-  static empty(): NotePublicInfo {
-    return new NotePublicInfo(Field.zero, EncryptedNote.empty());
+  static empty(): NoteInfo {
+    return new NoteInfo(Field.zero, EncryptedNote.empty());
   }
 }

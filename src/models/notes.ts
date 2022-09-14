@@ -1,17 +1,31 @@
-import { arrayProp, CircuitValue, prop } from 'snarkyjs';
-import { Note } from './note';
+import { SparseMerkleProof } from 'snarky-smt';
+import { arrayProp, CircuitValue, isReady, prop } from 'snarkyjs';
+import { Note as Note } from './note';
 
-const MAX_INPUT_NOTES = 8;
-const MAX_OUTPUT_NOTES = 2;
+await isReady;
+
+export const MAX_INPUT_NOTES = 8;
 
 export class InputNotes extends CircuitValue {
   @arrayProp(Note, MAX_INPUT_NOTES) notes: Note[];
+  @arrayProp(SparseMerkleProof, MAX_INPUT_NOTES)
+  membershipProofs: SparseMerkleProof[];
+  @arrayProp(SparseMerkleProof, MAX_INPUT_NOTES)
+  nullifierProofs: SparseMerkleProof[];
 
-  constructor(notes: Note[]) {
+  constructor(
+    notes: Note[],
+    membershipProofs: SparseMerkleProof[],
+    nullifierProofs: SparseMerkleProof[]
+  ) {
     super();
     this.notes = notes;
+    this.membershipProofs = membershipProofs;
+    this.nullifierProofs = nullifierProofs;
   }
 }
+
+export const MAX_OUTPUT_NOTEINFOS = 2;
 
 export class OutputNotes extends CircuitValue {
   @prop senderNote: Note;

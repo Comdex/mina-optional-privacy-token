@@ -2,6 +2,7 @@ import {
   CircuitValue,
   Encryption,
   Field,
+  isReady,
   Poseidon,
   PrivateKey,
   prop,
@@ -10,6 +11,8 @@ import {
 } from 'snarkyjs';
 import { EncryptedNote } from './encrypted_note';
 
+await isReady;
+
 export const DummyPrivateKey = PrivateKey.ofBits(Field.zero.toBits());
 
 export class Note extends CircuitValue {
@@ -17,13 +20,13 @@ export class Note extends CircuitValue {
   @prop owner: PublicKey;
   @prop memo: Field;
   @prop blinding: Field;
-  ownerPrivateKey?: PrivateKey;
+  @prop ownerPrivateKey: PrivateKey;
 
   constructor(
     amount: UInt64,
     owner: PublicKey,
     memo: Field,
-    ownerPrivateKey?: PrivateKey,
+    ownerPrivateKey: PrivateKey,
     blinding: Field = Field.random()
   ) {
     super();
@@ -42,6 +45,14 @@ export class Note extends CircuitValue {
       DummyPrivateKey,
       Field.zero
     );
+  }
+
+  toFields(): Field[] {
+    return this.amount
+      .toFields()
+      .concat(this.owner.toFields())
+      .concat(this.memo.toFields())
+      .concat(this.blinding.toFields());
   }
 
   hash(): Field {
