@@ -4,7 +4,7 @@ import { Note as Note } from './note';
 
 await isReady;
 
-export const MAX_INPUT_NOTES = 6;
+export const MAX_INPUT_NOTES = 4;
 
 export class InputNotes extends CircuitValue {
   @arrayProp(Note, MAX_INPUT_NOTES) notes: Note[];
