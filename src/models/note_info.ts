@@ -1,5 +1,6 @@
-import { CircuitValue, Field, isReady, prop } from 'snarkyjs';
+import { CircuitValue, Field, isReady, PrivateKey, prop } from 'snarkyjs';
 import { EncryptedNote } from './encrypted_note';
+import { Note } from './note';
 
 await isReady;
 
@@ -11,6 +12,10 @@ export class NoteInfo extends CircuitValue {
     super();
     this.commitment = commitment;
     this.encryptedNote = encryptedNote;
+  }
+
+  getNote(privateKey: PrivateKey): Note {
+    return this.encryptedNote.decrypt(privateKey);
   }
 
   static empty(): NoteInfo {

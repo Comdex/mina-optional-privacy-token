@@ -20,13 +20,11 @@ export class Note extends CircuitValue {
   @prop owner: PublicKey;
   @prop memo: Field;
   @prop blinding: Field;
-  @prop ownerPrivateKey: PrivateKey;
 
   constructor(
     amount: UInt64,
     owner: PublicKey,
     memo: Field,
-    ownerPrivateKey: PrivateKey,
     blinding: Field = Field.random()
   ) {
     super();
@@ -34,26 +32,19 @@ export class Note extends CircuitValue {
     this.owner = owner;
     this.memo = memo;
     this.blinding = blinding;
-    this.ownerPrivateKey = ownerPrivateKey;
   }
 
   static empty(): Note {
-    return new Note(
-      UInt64.zero,
-      PublicKey.empty(),
-      Field.zero,
-      DummyPrivateKey,
-      Field.zero
-    );
+    return new Note(UInt64.zero, PublicKey.empty(), Field.zero, Field.zero);
   }
 
-  toFields(): Field[] {
-    return this.amount
-      .toFields()
-      .concat(this.owner.toFields())
-      .concat(this.memo.toFields())
-      .concat(this.blinding.toFields());
-  }
+  // toFields(): Field[] {
+  //   return this.amount
+  //     .toFields()
+  //     .concat(this.owner.toFields())
+  //     .concat(this.memo.toFields())
+  //     .concat(this.blinding.toFields());
+  // }
 
   hash(): Field {
     return Poseidon.hash(this.toFields());
@@ -69,9 +60,9 @@ export class Note extends CircuitValue {
     return Poseidon.hash(this.toFields());
   }
 
-  getNullifier(): Field {
+  getNullifier(privateKey: PrivateKey): Field {
     const commitment = this.getCommitment();
-    let sign = Poseidon.hash(this.ownerPrivateKey!.toFields());
+    let sign = Poseidon.hash(privateKey.toFields());
     return Poseidon.hash([commitment].concat(sign.toFields()));
   }
 }

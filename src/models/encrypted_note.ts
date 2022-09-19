@@ -13,7 +13,7 @@ import { Note } from './note';
 
 await isReady;
 
-export const NOTE_CIPHERTEXT_LENGTH = Note.sizeInFields() + 1;
+export const NOTE_CIPHERTEXT_LENGTH = 5 + 1;
 
 export class EncryptedNote extends CircuitValue {
   @prop publicKey: Group;
